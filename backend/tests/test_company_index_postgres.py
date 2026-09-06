@@ -358,6 +358,93 @@ def test_the_length_the_api_now_refuses_really_does_break_the_insert(probe_rows)
     If this database's indexes did not have the ceiling, the test below would
     assert only that a short string fits in a large index — true of any schema,
     and no evidence at all that ``_MAX_COMPANY_LEN`` was needed.
+
+    THE CHECK CONSTRAINT NOW STANDS IN FRONT OF THE CEILING (#738), and this
+    test had to be rewritten rather than re-baselined. Once
+    ``ck_applications_company_len`` existed, the 2,700-character INSERT was
+    refused by the CHECK and the assertion below started reading
+    ``CheckViolation`` instead of ``index row size``. Changing the expected
+    string to match would have kept the test green while deleting the only
+    evidence in this repository that the btree ceiling is real — and the
+    ceiling is the whole reason the bound exists.
+
+    So the constraint is dropped INSIDE this transaction, the probe runs
+    against the raw column, and the rollback puts it back. Postgres DDL is
+    transactional, and the failing INSERT aborts the transaction anyway, so
+    the drop cannot escape this test even if the assertion does.
+    """
+
+    from sqlalchemy.exc import DatabaseError
+
+    # The constraint has to BE there for dropping it to mean anything. Without
+    # this the DROP would raise "constraint does not exist", `pytest.raises`
+    # would swallow it as a DatabaseError, and the failure would read as "the
+    # btree did not fire" — the wrong diagnosis for a missing migration.
+    with probe_rows.connect() as conn:
+        assert (
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_constraint "
+                    "WHERE conname = 'ck_applications_company_len'"
+                )
+            ).scalar()
+            == 1
+        ), "the CHECK is absent from this schema: `alembic upgrade head` did not create it"
+
+    with pytest.raises(DatabaseError) as excinfo, probe_rows.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE applications DROP CONSTRAINT ck_applications_company_len")
+        )
+        conn.execute(
+            text(
+                "INSERT INTO applications "
+                "(user_id, company, position, status, source, created_at, updated_at) "
+                "VALUES (:uid, :company, 'Engineer', 'APPLIED', 'manual', now(), now())"
+            ),
+            {"uid": _COMPANY_PROBE_USER, "company": _incompressible(2700)},
+        )
+
+    message = str(excinfo.value)
+    assert "index row size" in message and "btree" in message, (
+        "the INSERT failed for some reason other than the btree index-row limit, "
+        f"so this module is not measuring what it claims to:\n{message}"
+    )
+
+    # AND THE CONSTRAINT REALLY DID COME BACK. Without this the test above
+    # could leave the column unbounded for the rest of the session and the
+    # sibling below would then be measuring a schema this suite had quietly
+    # dismantled.
+    with probe_rows.connect() as conn:
+        present = conn.execute(
+            text(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conname = 'ck_applications_company_len'"
+            )
+        ).scalar()
+    assert present == 1, "the rollback did not restore the CHECK constraint"
+
+
+def test_the_check_constraint_answers_before_the_btree_does(probe_rows):
+    """Defence in depth, and the order matters (#738).
+
+    The btree ceiling is a *crash*: inside the sync's single transaction it
+    takes the whole batch, so every message in that page is lost and the next
+    sync re-reads and re-poisons. The CHECK is a *refusal* of one row.
+
+    Same 2,700-character value as the test above, with the constraint left
+    where it belongs: the column says no first, by name, and the btree is never
+    reached.
+
+    MUST RED ON: the revision `f1c47b93a2d6` no longer creating the constraint
+    — the error string reverts to `index row size`, the pre-#738 behaviour.
+
+    THE MODEL IS NOT WHAT THIS GRADES, and that was measured rather than
+    assumed: removing the `CheckConstraint` from `Application.__table_args__`
+    leaves all eight tests in this module green. `seeded_engine` builds its
+    schema with `alembic upgrade head`, so this module grades the DEPLOYED
+    shape and `tests/test_company_is_bounded_in_the_column.py` grades the
+    model's. Both are needed — the model is what `create_all` gives every
+    SQLite database, and the migration is what production gets.
     """
 
     from sqlalchemy.exc import DatabaseError
@@ -366,9 +453,9 @@ def test_the_length_the_api_now_refuses_really_does_break_the_insert(probe_rows)
         _insert_company(probe_rows, _incompressible(2700))
 
     message = str(excinfo.value)
-    assert "index row size" in message and "btree" in message, (
-        "the INSERT failed for some reason other than the btree index-row limit, "
-        f"so this module is not measuring what it claims to:\n{message}"
+    assert "ck_applications_company_len" in message, message
+    assert "index row size" not in message, (
+        "the btree limit was reached, so the CHECK did not answer first:\n" + message
     )
 
 

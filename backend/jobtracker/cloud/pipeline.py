@@ -35,6 +35,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
+# The bound itself lives in a leaf module, because `database/models.py`
+# now needs the same number for a CHECK constraint and must not import
+# this file to learn it (#738). Aliased rather than renamed: twenty call
+# sites below spell it `_MAX_COMPANY_LEN` and the churn would bury the
+# change that matters.
+from jobtracker.limits import MAX_COMPANY_LEN
+
 logger = logging.getLogger(__name__)
 
 # The full category vocabulary the cloud rules classifier can emit. Kept in one
@@ -2566,7 +2573,7 @@ def _valid_company_token(token: str) -> bool:
 # ``user_id`` in the composite index, and the rare code point whose ``lower()``
 # is longer than itself. A registered company name does not approach it; the
 # longest in the owner's own board is 34 characters.
-_MAX_COMPANY_LEN = 300
+_MAX_COMPANY_LEN = MAX_COMPANY_LEN
 
 # Applied as a REFUSAL, never a truncation. A 2,700-character sender display
 # name is not a company name that needs shortening; it is a string that does not

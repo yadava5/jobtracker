@@ -36,6 +36,8 @@ from sqlalchemy import Column
 from sqlalchemy import Enum as SAEnum
 from sqlmodel import Field, Relationship, SQLModel
 
+from jobtracker.limits import MAX_COMPANY_LEN
+
 # =============================================================================
 # Multi-tenancy sentinel
 # =============================================================================
@@ -331,6 +333,42 @@ class Application(TimestampMixin, table=True):
     __tablename__ = "applications"
     __table_args__ = (
         sa.Index("ix_applications_user_id_status", "user_id", "status"),
+        # THE BOUND ON `company`, AT THE LAYER THAT OWNS IT (#738).
+        #
+        # #581 closed four application-code paths that could put an oversized
+        # employer name here. Every one of those bounds is Python, placed at
+        # the producers known then — and the defect is a FLOW property ("no
+        # unbounded value reaches this column"), so a future display producer
+        # reaching an existing write site bypasses all of them. The tree
+        # already carries the template: `employer_named_in_body` is a display
+        # producer whose confinement to display grade is enforced by docstring
+        # only.
+        #
+        # WHAT IT PREVENTS. `ix_applications_company` is a btree; Postgres
+        # refuses an entry over 2704 bytes, and inside the sync's single
+        # transaction that takes the WHOLE batch — measured, `AAA + POISON +
+        # ZZZ` left zero rows including the message that had already flushed,
+        # and nothing commits, so every later sync re-reads the same mail and
+        # re-poisons.
+        #
+        # THE DECISIVE PROPERTY IS NOT POSTGRES. SQLite enforces CHECK
+        # constraints too, so the entire "invisible on a laptop" class that
+        # produced #406 and #581 becomes loud in the first local test run —
+        # for every writer past and future, whatever the syntax: `setattr`,
+        # `**kwargs`, Core `update()`, raw SQL, and the producer nobody has
+        # written yet. Declared on the model, so `create_all`-built test
+        # schemas carry it without anyone remembering to.
+        #
+        # THE NUMBER IS IMPORTED, NEVER RETYPED. Two ceilings on one column is
+        # the drift #581 exists to prevent, and a CHECK that disagrees with
+        # `cloud/applications.py`'s request models is worse than neither: one
+        # would reject what the other accepted, and which you hit would depend
+        # on the write path. `length()` is character semantics on both engines,
+        # which is the unit `MAX_COMPANY_LEN` is expressed in.
+        sa.CheckConstraint(
+            f"length(company) <= {MAX_COMPANY_LEN}",
+            name="ck_applications_company_len",
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
