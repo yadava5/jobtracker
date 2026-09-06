@@ -6,7 +6,7 @@ Application settings and configuration management using pydantic-settings.
 
 All settings can be overridden via environment variables with the
 JOBTRACKER_ prefix. For example:
-    JOBTRACKER_API_PORT=9000
+    JOBTRACKER_SYNC_BATCH_SIZE=250
     JOBTRACKER_LOG_LEVEL=DEBUG
 
 Settings are loaded from:
@@ -18,8 +18,15 @@ Usage:
 ------
     from jobtracker.config import settings
 
-    print(settings.api_host)  # "127.0.0.1"
+    print(settings.sync_batch_size)  # 100
     print(settings.database_path)  # ~/Library/Application Support/JobTracker/jobtracker.db
+
+Both examples name fields that something READS. That is not incidental: the
+previous pair demonstrated ``api_port`` and ``api_host``, and both were deleted
+in #645 as fields nothing consumed — a module docstring teaching an example
+that the module no longer contains. ``tests/test_no_dead_settings_fields.py``
+is what stops a field outliving its last reader; nothing stops a docstring
+outliving its subject except reading it.
 """
 
 from functools import lru_cache
@@ -66,16 +73,6 @@ class Settings(BaseSettings):
     deployment: Literal["desktop", "cloud"] = "desktop"
 
     # -------------------------------------------------------------------------
-    # API Server
-    # -------------------------------------------------------------------------
-    api_host: str = "127.0.0.1"
-    api_port: int = 8000
-    api_reload: bool = Field(
-        default=False,
-        description="Auto-reload on code changes (development only).",
-    )
-
-    # -------------------------------------------------------------------------
     # Database
     # -------------------------------------------------------------------------
     database_dir: str = Field(
@@ -94,15 +91,6 @@ class Settings(BaseSettings):
             "or sqlite+aiosqlite:///path.db). When set, this overrides the "
             "computed SQLite URL used by the application engine. Leave unset "
             "on desktop builds to keep the local SQLite database."
-        ),
-    )
-    direct_database_url: str | None = Field(
-        default=None,
-        description=(
-            "Non-pooler database URL used by Alembic migrations only. "
-            "Required on Supabase because PgBouncer (transaction pooling) "
-            "does not support the prepared-statement flow Alembic emits "
-            "during DDL. Not consumed by the runtime app engine."
         ),
     )
 
@@ -157,17 +145,9 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Email Sync
     # -------------------------------------------------------------------------
-    sync_interval_seconds: int = Field(
-        default=900,  # 15 minutes
-        description="Interval between automatic email syncs",
-    )
     sync_batch_size: int = Field(
         default=100,
         description="Number of emails to fetch per batch",
-    )
-    sync_max_age_days: int = Field(
-        default=90,
-        description="Maximum age of emails to sync on first run",
     )
 
     # -------------------------------------------------------------------------
@@ -177,24 +157,10 @@ class Settings(BaseSettings):
         default=["https://www.googleapis.com/auth/gmail.readonly"],
         description="OAuth2 scopes for Gmail API access",
     )
-    gmail_credentials_file: str = Field(
-        default="credentials/gmail_credentials.json",
-        description="Path to Gmail OAuth client credentials (relative to backend/)",
-    )
-
-    # -------------------------------------------------------------------------
-    # iCloud Mail
-    # -------------------------------------------------------------------------
-    icloud_imap_host: str = "imap.mail.me.com"
-    icloud_imap_port: int = 993
 
     # -------------------------------------------------------------------------
     # ML Classifier
     # -------------------------------------------------------------------------
-    embedding_model: str = Field(
-        default="intfloat/e5-small-v2",
-        description="Sentence embedding model from HuggingFace",
-    )
     ml_model_delivery_strategy: Literal[
         "download_on_first_launch", "bundle_in_app"
     ] = Field(
@@ -205,25 +171,9 @@ class Settings(BaseSettings):
             "the first time classification is used."
         ),
     )
-    setfit_confidence_threshold: float = Field(
-        default=0.70,
-        description="Minimum confidence for SetFit classification",
-    )
-    setfit_retrain_threshold: int = Field(
-        default=5,
-        description="Number of new corrections before triggering SetFit retrain",
-    )
-    setfit_min_examples_per_class: int = Field(
-        default=5,
-        description="Minimum examples per class required for SetFit training",
-    )
     lite_mode: bool = Field(
         default=False,
         description="Disable SetFit for 8GB RAM machines (rules + embeddings only)",
-    )
-    analytics_enabled: bool = Field(
-        default=False,
-        description="Expose analytics endpoints (off by default while de-scoped).",
     )
 
     # -------------------------------------------------------------------------
